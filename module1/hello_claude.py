@@ -39,15 +39,20 @@ MOCK_RESPONSE = {
     "confidence":   "HIGH",
 }
 
-# ── System prompt ──────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """\
-You are a platform engineering assistant. Analyse the CI/CD failure log snippet \
-and return ONLY valid JSON with these keys:
-- summary (string): one sentence describing what failed
-- likely_cause (string): one sentence explaining the root cause
-- next_step (string): one concrete remediation action
-- confidence (HIGH|MEDIUM|LOW): your confidence in the diagnosis
-"""
+# TODO: Write your system prompt here.
+# Your prompt must instruct Claude to:
+#   1. Take the role of a platform engineering assistant
+#   2. Analyse the CI/CD failure log provided by the user
+#   3. Return ONLY valid JSON — no explanation, no markdown, just the JSON object
+#   4. Include exactly these keys:
+#      - summary      (string)            one sentence describing what failed
+#      - likely_cause (string)            one sentence on the root cause
+#      - next_step    (string)            one concrete remediation action
+#      - confidence   (HIGH|MEDIUM|LOW)   your confidence in the diagnosis
+#
+# Hint: be explicit about the output format. Claude follows precise instructions well.
+# Check solutions/solution.py only after you have made your own attempt.
+SYSTEM_PROMPT = ""  # Replace this empty string with your prompt
 
 # ── Sample log (embedded so the script is self-contained) ─────────────────────
 SAMPLE_LOG = (Path(__file__).parent / "sample_log.txt").read_text()

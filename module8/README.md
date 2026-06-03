@@ -39,7 +39,7 @@ python module1/verify_setup.py
 
 ## Step-by-Step Instructions
 
-### Step 1 — Run mock mode first
+### Part 1 — Run mock mode first
 
 Before writing any code, run the agent in mock mode to see the shape of each step's output:
 
@@ -49,54 +49,51 @@ python module8/platform_agent.py --simulate --mock
 
 You will see five JSON blocks — INGEST, DIAGNOSE, GATE, FIX/ESCALATE, REPORT — followed by the final report and a 🔴 ESCALATION message. This is exactly what your completed functions will produce.
 
-### Step 2 — Read the worked example
+### Part 2 — Read the worked example
 
-Open `platform_agent.py` and read `run_step_ingest()` carefully. Every other step follows the same three-line pattern:
+Open `platform_agent.py` and read `run_step_ingest()` carefully. Every other pipeline step follows the same three-line pattern:
 
 ```python
 def run_step_ingest(event: dict) -> dict:
     return run_step("INGEST", INGEST_PROMPT, event)
 ```
 
-The difference for Steps 3–6 is that you need to build a richer `context` dict that passes results from earlier steps to Claude.
+The difference for pipeline Steps 2–5 is that you need to build a richer `context` dict that passes results from earlier steps to Claude.
 
-### Step 3 — Complete `run_step_diagnose()`
+### Part 3 — Complete `run_step_diagnose()` (Pipeline Step 2)
 
-Build a context dict that contains both the original `event` and the `ingest` result, then call `run_step()` with `DIAGNOSE_PROMPT`.
+Build a context dict that contains both the original `event` and the `ingest` result, then call `run_step()` with `DIAGNOSE_PROMPT`. Follow the same pattern as `run_step_ingest()` — the docstring in the function describes exactly what the context needs to contain.
 
-```python
-def run_step_diagnose(event: dict, ingest: dict) -> dict:
-    context = {
-        "event":          event,
-        "classification": ingest,   # gives Claude the step 1 output
-    }
-    return run_step("DIAGNOSE", DIAGNOSE_PROMPT, context)
-```
-
-Once you implement DIAGNOSE, remove `--mock` to verify Step 3 calls Claude correctly before continuing:
+Once you implement DIAGNOSE, remove `--mock` to verify it calls Claude correctly before continuing:
 
 ```bash
 ANTHROPIC_API_KEY=sk-... python module8/platform_agent.py --simulate
 ```
 
-### Step 4 — Complete `run_step_gate()`
+### Part 4 — Complete `run_step_gate()` (Pipeline Step 3)
 
-Same pattern. Context combines `event` and `diagnose` result.
+Same pattern. Context combines `event` and the `ingest` result — **not** `diagnose`. Gate evaluates static quality signals from INGEST independently of the root cause analysis. See the docstring hint in the function for the expected context shape.
 
-### Step 5 — Complete `run_step_fix_or_escalate()`
+### Part 5 — Complete `run_step_fix_or_escalate()` (Pipeline Step 4)
 
 This step has the key branching logic. After calling `run_step()`:
 
 - If `result['path'] == 'AUTO_FIX'` and `result.get('auto_fix_script')` is non-empty → call `save_fix_script(result['auto_fix_script'], pipeline_id)` and add the returned path to `result['fix_script_path']`.
 - Otherwise return the result as-is (ESCALATE path).
 
-The AUTO_FIX path only triggers when the system prompt conditions are all met (HIGH confidence + fix_possible=true + no DB migration involved). For the default `--simulate` event, the expected result is ESCALATE.
+AUTO_FIX only triggers when **all four** of these conditions are true:
+  - `diagnose['confidence'] == 'HIGH'`
+  - `diagnose['fix_possible'] == True`
+  - `conflict['resolution'] != 'SAFETY_FIRST_ESCALATE'`
+  - `'migration'` is not present in the event logs
 
-### Step 6 — Complete `generate_report()`
+For the default `--simulate` event, the expected result is ESCALATE.
+
+### Part 6 — Complete `generate_report()` (Pipeline Step 5)
 
 Build context from `pipeline_id` and the full `steps` dict, call `run_step()` with `REPORT_PROMPT`.
 
-### Step 7 — Run the full pipeline live
+### Part 7 — Run the full pipeline live
 
 ```bash
 ANTHROPIC_API_KEY=sk-... python module8/platform_agent.py --simulate
@@ -104,7 +101,7 @@ ANTHROPIC_API_KEY=sk-... python module8/platform_agent.py --simulate
 
 All five steps should complete, each printing a JSON block. The final output will show either 🔴 ESCALATION REQUIRED or ✅ Pipeline resolved.
 
-### Step 8 — Trigger via GitHub Actions
+### Part 8 — Trigger via GitHub Actions
 
 Push any commit to your fork to trigger the workflow manually, or use the Actions tab → "Module 8 — Capstone Agent" → "Run workflow".
 

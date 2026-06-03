@@ -1,7 +1,13 @@
 {
+  "_comment": "Sample pipeline results for Module 5. Used as input for both triage_agent.py (pre-deploy gate) and monitor.py (post-deploy watchdog).",
+  "service": "checkout-service",
+  "deploy_id": "deploy-2024-0121-009",
   "pipeline_id": "pipe-2024-0121-007",
   "branch": "main",
   "commit_sha": "a3f8b21",
+  "deploy_day": "Friday",
+  "lines_changed": 623,
+  "files_changed": 14,
   "test_results": {
     "total": 1240,
     "passed": 1228,
@@ -10,12 +16,20 @@
     "pass_rate_pct": 99.03
   },
   "coverage_pct": 81.4,
+  "coverage_branch_pct": 73.5,
   "security_scan": {
     "critical": 0,
     "high": 1,
     "medium": 3
   },
+  "lighthouse_score": 91,
+  "latency_p95_delta_pct": 18.4,
+  "cost_per_request_delta_pct": 3.2,
   "performance_delta_pct": -2.1,
+  "deploy_age_minutes": 8,
+  "rollback_available": true,
+  "previous_version": "v1.8.2",
+  "db_migration_present": false,
   "last_prod_deploy": "2024-01-19T10:00:00Z",
   "on_call_engineer": "maya@example.com"
 }

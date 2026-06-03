@@ -76,9 +76,11 @@ ANTHROPIC_API_KEY=sk-... python module1/agent.py
 
 ## Exercise
 
-Open `hello_claude.py`. Your task: write the `SYSTEM_PROMPT` that instructs Claude to return `summary`, `likely_cause`, and `next_step` in JSON, then call `ask()` with the contents of `sample_log.txt` as the user message.
+Open `hello_claude.py`. You will find `SYSTEM_PROMPT = ""` and a set of TODO comments describing exactly what the prompt must do. Your task: write the prompt that instructs Claude to return `summary`, `likely_cause`, `next_step`, and `confidence` as valid JSON.
 
-Look at `agent-config.yml` for the expected output schema. Attempt your own implementation before reading `solutions/solution.py`.
+The `run_api_mode()` function and the `ask()` call are already wired — you only need to write the prompt. Run `--mock` first to confirm your environment works, then run live once your prompt is in place.
+
+Attempt your own implementation before reading `solutions/solution.py`.
 
 ---
 

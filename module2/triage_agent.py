@@ -41,12 +41,21 @@ MOCK_RESPONSE = {
     "escalate":     False,
 }
 
-SYSTEM_PROMPT = (
-    "You are a CI/CD triage agent. Analyse the build log and return ONLY valid JSON with keys: "
-    "summary (string), likely_cause (string), next_step (string), "
-    "confidence (HIGH|MEDIUM|LOW), escalate (boolean). "
-    "confidence is HIGH only when the root cause is directly visible in the log."
-)
+# TODO: Write your system prompt here.
+# Your prompt must instruct Claude to:
+#   1. Take the role of a CI/CD triage agent
+#   2. Analyse the build log provided by the user
+#   3. Return ONLY valid JSON — no explanation, no markdown, just the JSON object
+#   4. Include exactly these keys:
+#      - summary      (string)            one sentence describing what failed
+#      - likely_cause (string)            one sentence on the root cause
+#      - next_step    (string)            one concrete remediation action
+#      - confidence   (HIGH|MEDIUM|LOW)   your confidence in the diagnosis
+#      - escalate     (boolean)           true only if the issue needs human intervention
+#
+# Hint: be explicit about when escalate should be true vs false.
+# Check solutions/solution.py only after you have made your own attempt.
+SYSTEM_PROMPT = ""  # Replace this empty string with your prompt
 
 
 def load_sample() -> str:

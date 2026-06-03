@@ -1,17 +1,19 @@
 # Agentic AI in Platform Engineering
+### A PlatformEngineering.org course
 
--- Course Link [university.platformengineering.org/agentic-ai-in-platform-engineering](https://university.platformengineering.org/agentic-ai-in-platform-engineering)
-
--- This repository contains the hands-on exercise code for every module of the course. Each `moduleN/` directory is self-contained: one agent script, one sample data file, one config, and a README with the exercise brief.
+This repository contains the hands-on exercise code for every module of the course. Each `moduleN/` directory is self-contained: one agent script, one sample data file, one config, and a README with the exercise brief.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_ORG/agentic-platform-engineering.git
-cd agentic-platform-engineering
+# 1. Fork the repo first (required for GitHub Actions secrets)
+#    Go to https://github.com/InternalDeveloperPlatform/pe-agentic-course and click Fork
+
+# 2. Clone YOUR fork
+git clone https://github.com/YOUR_USERNAME/pe-agentic-course.git
+cd pe-agentic-course
 
 # 2. Set your API key
 export ANTHROPIC_API_KEY=sk-ant-...

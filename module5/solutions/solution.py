@@ -68,19 +68,20 @@ MOCK_RESPONSE = {
 }
 
 # ── System prompt ──────────────────────────────────────────────────────────────
-# This solution extends the exercise's SYSTEM_PROMPT with a sixth gate dimension:
-# Change Risk (deploy day + lines changed). Adding a new gate dimension requires:
-#   1. Adding it here in the system prompt
-#   2. Adding the corresponding field to the output schema
-# No pipeline code changes needed — the agent reads thresholds from context.
+# The five standard gate thresholds are NOT hardcoded here — they are loaded
+# from quality-gates.json and injected into the user message at runtime.
+# This means changing a threshold requires only a JSON edit, not a code change.
+#
+# The sixth dimension (Change Risk) IS defined here because it captures
+# contextual factors (deploy day, lines changed) that are not metric thresholds
+# and don't belong in quality-gates.json. Demonstrating how to extend the gate
+# schema without touching pipeline code is the point of this solution.
 SYSTEM_PROMPT = (
-    "You are a release readiness evaluation agent with six gate dimensions:\n"
-    "  1. Correctness   — test_pass_rate >= 95%\n"
-    "  2. Coverage      — line_coverage >= 80% (non-blocking: flag as condition if below)\n"
-    "  3. Security      — zero SAST HIGH findings (blocking)\n"
-    "  4. Performance   — Lighthouse score >= 85\n"
-    "  5. Cost          — cost_per_request_delta <= 10%\n"
-    "  6. Change Risk   — HIGH if Friday deploy AND lines_changed > 500\n\n"
+    "You are a release readiness evaluation agent. You will receive pipeline results "
+    "and a list of quality gates, each with a metric name, threshold, and operator. "
+    "Evaluate every gate. A gate passes when: metric_value <operator> threshold.\n\n"
+    "Additionally, apply a sixth dimension not in the gate list:\n"
+    "  Change Risk — HIGH if deploy_day is Friday AND lines_changed > 500.\n\n"
     "Return ONLY valid JSON with keys:\n"
     "  decision (APPROVE|APPROVE_WITH_CONDITIONS|REJECT),\n"
     "  confidence (HIGH|MEDIUM|LOW),\n"
@@ -100,9 +101,21 @@ AGENT_CONFIG = {
 }
 
 
-def load_sample() -> str:
-    """Load the pipeline results from sample_data.json."""
-    return (Path(__file__).parent.parent / "sample_data.json").read_text()
+def load_sample() -> dict:
+    """Load pipeline results from sample_data.json."""
+    return json.loads((Path(__file__).parent.parent / "sample_data.json").read_text())
+
+
+def load_gates() -> list:
+    """Load quality gate thresholds from quality-gates.json.
+
+    Thresholds live in config, not in the system prompt. Editing quality-gates.json
+    changes gate behaviour without touching any Python code — that is the
+    architectural principle this module demonstrates.
+    """
+    gates_path = Path(__file__).parent.parent / "quality-gates.json"
+    data = json.loads(gates_path.read_text())
+    return data.get("gates", [])
 
 
 def run_agent() -> dict:
@@ -118,16 +131,21 @@ def run_agent() -> dict:
     from iteration because the agent can request more information. Evaluating
     known pipeline metrics against known thresholds does not.
     """
-    context = load_sample()
+    pipeline = load_sample()
+    gates    = load_gates()
 
     if MOCK_MODE:
         print("[MOCK MODE] Skipping Claude API — returning pre-defined response.")
         print("[MOCK MODE] Shows APPROVE_WITH_CONDITIONS — typical borderline case.\n")
         result = MOCK_RESPONSE
     else:
+        context = {
+            "pipeline_results": pipeline,
+            "quality_gates":    gates,
+        }
         result = ask(
             system=SYSTEM_PROMPT,
-            user=f"Pipeline results:\n{context}",
+            user=f"Evaluate this pipeline against the provided quality gates:\n\n{json.dumps(context, indent=2)}",
             model=AGENT_CONFIG["model"],
             max_tokens=AGENT_CONFIG["max_tokens"],
         )

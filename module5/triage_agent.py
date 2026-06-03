@@ -46,33 +46,45 @@ SYSTEM_PROMPT = (
 )
 
 AGENT_CONFIG = {
-    "model": "claude-opus-4-5-20251101",
+    "model":      "claude-opus-4-5-20251101",
     "max_tokens": 1024,
-    "max_iterations": 1,
-    "context_fields": [
-        "pipeline_id",
-        "test_results",
-        "coverage_pct",
-        "security_scan"
-    ]
 }
 
-def load_sample() -> str:
+
+def load_sample() -> dict:
+    """Load pipeline results from sample_data.json."""
     sample = Path(__file__).parent / "sample_data.json"
-    return sample.read_text()
+    return json.loads(sample.read_text())
+
+
+def load_gates() -> list:
+    """Load all quality gate thresholds from quality-gates.json.
+
+    Keeping thresholds in a config file (not in the system prompt) means you
+    can change a gate threshold with a one-line JSON edit — no code change
+    required. The agent receives the thresholds as data and applies them.
+    """
+    gates_path = Path(__file__).parent / "quality-gates.json"
+    data = json.loads(gates_path.read_text())
+    return data.get("gates", [])
 
 
 def run_agent() -> dict:
-    context = load_sample()
+    pipeline = load_sample()
+    gates    = load_gates()
 
     if MOCK_MODE:
         print("[MOCK MODE] Skipping Claude API — returning pre-defined response.")
         print("[MOCK MODE] This shows APPROVE_WITH_CONDITIONS — the typical borderline gate result.\n")
         result = MOCK_RESPONSE
     else:
+        context = {
+            "pipeline_results": pipeline,
+            "quality_gates":    gates,
+        }
         result = ask(
             system=SYSTEM_PROMPT,
-            user=f"Context:\n{context}",
+            user=f"Evaluate this pipeline against the provided quality gates:\n\n{json.dumps(context, indent=2)}",
             model=AGENT_CONFIG["model"],
             max_tokens=AGENT_CONFIG["max_tokens"],
         )
