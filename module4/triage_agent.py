@@ -61,12 +61,12 @@ AGENT_CONFIG = {
     ]
 }
 
-def load_sample() -> str:
-    return Path(__file__).parent / "sample_data.json"
+def load_sample(file_name: str) -> str:
+    return Path(__file__).parent / file_name
 
 
 def run_agent() -> dict:
-    context = load_sample()
+    context = load_sample("sample_data.json")
 
     if MOCK_MODE:
         print("[MOCK MODE] Skipping Claude API — returning pre-defined response.")
