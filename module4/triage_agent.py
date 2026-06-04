@@ -62,7 +62,7 @@ AGENT_CONFIG = {
 }
 
 def load_sample() -> str:
-    return (Path(__file__).parent.parent / "sample_data.json").read_text()
+    return Path(__file__).parent / "sample_data.json"
 
 
 def run_agent() -> dict:
