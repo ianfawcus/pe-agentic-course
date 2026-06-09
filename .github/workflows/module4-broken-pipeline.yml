@@ -37,11 +37,11 @@ jobs:
 
       - name: Run broken_app.py
         id: run
-        # continue-on-error so the triage job always runs
-        continue-on-error: true
         run: |
           python module4/broken_app/app.py 2>&1 | tee /tmp/broken_app.log
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit_code=${PIPESTATUS[0]}
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit $exit_code
 
       - name: Show raw failure log
         if: always()
