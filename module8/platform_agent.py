@@ -268,36 +268,18 @@ def run_step_ingest(event: dict) -> dict:
 
 
 def run_step_diagnose(event: dict, ingest: dict) -> dict:
-    """Step 2 — DIAGNOSE: root cause analysis.
-
-    TODO: Follow the same pattern as run_step_ingest().
-
-    The context should give Claude both the original event AND the ingest
-    classification so it has the full picture. Build the dict, call
-    run_step() with DIAGNOSE_PROMPT, and return the result.
-    """
-    # TODO: build context dict combining event and ingest result
-    # TODO: call run_step("DIAGNOSE", DIAGNOSE_PROMPT, context) and return the result
-    raise NotImplementedError("Complete run_step_diagnose() — see the docstring for the pattern.")
+    """Step 2 — DIAGNOSE: root cause analysis."""
+    context = {"event": event, "classification": ingest}
+    return run_step("DIAGNOSE", DIAGNOSE_PROMPT, context)
 
 
 def run_step_gate(event: dict, ingest: dict) -> dict:
     """Step 3 — GATE: evaluate quality gates independently of DIAGNOSE.
 
-    This specialist runs in PARALLEL with run_step_diagnose() — it reads
-    from the INGEST classification, not the diagnosis. Its job is to assess
-    static quality signals: failure severity, stage, service risk, and
-    deployment eligibility — without knowing the root cause.
-
-    TODO: Build context from the event and the ingest result (not diagnose),
-    call run_step() with GATE_PROMPT, and return the result.
-
-    Hint: the context dict should look like:
-        {"event": event, "classification": ingest}
+    Reads from INGEST, not DIAGNOSE — runs in parallel with run_step_diagnose().
     """
-    # TODO: build context dict combining event and ingest result
-    # TODO: call run_step("GATE", GATE_PROMPT, context) and return the result
-    raise NotImplementedError("Complete run_step_gate() — use ingest, not diagnose.")
+    context = {"event": event, "classification": ingest}
+    return run_step("GATE", GATE_PROMPT, context)
 
 
 def detect_conflict(diagnose: dict, gate: dict) -> dict:
@@ -348,43 +330,24 @@ def detect_conflict(diagnose: dict, gate: dict) -> dict:
 def run_step_fix_or_escalate(
     event: dict, diagnose: dict, gate: dict, conflict: dict, pipeline_id: str
 ) -> dict:
-    """Step 4 — FIX/ESCALATE: decide the remediation path.
-
-    Receives the results of both parallel specialists (DIAGNOSE + GATE) plus
-    the conflict detection output. The conflict is already resolved — if
-    SAFETY_FIRST_ESCALATE was triggered, include it in context so Claude
-    understands why auto-fix is off the table.
-
-    TODO:
-    1. Build context from event, diagnose, gate, and conflict.
-    2. Call run_step() with FIX_OR_ESCALATE_PROMPT.
-    3. If the result path is AUTO_FIX and auto_fix_script is non-empty,
-       call save_fix_script(result['auto_fix_script'], pipeline_id).
-       Add a 'fix_script_path' key to the result with the returned path (as a string).
-    4. Return the result.
-
-    Key rule — AUTO_FIX only when ALL of these are true:
-      - diagnose['confidence'] == 'HIGH'
-      - diagnose['fix_possible'] == True
-      - conflict['resolution'] != 'SAFETY_FIRST_ESCALATE'
-      - 'migration' not in the event logs (never auto-fix DB state)
-    """
-    # TODO: build context dict including event, diagnose, gate, and conflict
-    # TODO: call run_step("FIX_OR_ESCALATE", FIX_OR_ESCALATE_PROMPT, context)
-    # TODO: handle AUTO_FIX path — call save_fix_script() if script is present
-    # TODO: return the result
-    raise NotImplementedError("Complete run_step_fix_or_escalate().")
+    """Step 4 — FIX/ESCALATE: decide the remediation path."""
+    context = {
+        "event":     event,
+        "diagnosis": diagnose,
+        "gate":      gate,
+        "conflict":  conflict,
+    }
+    result = run_step("FIX_OR_ESCALATE", FIX_OR_ESCALATE_PROMPT, context)
+    if result.get("path") == "AUTO_FIX" and result.get("auto_fix_script"):
+        fix_path = save_fix_script(result["auto_fix_script"], pipeline_id)
+        result["fix_script_path"] = str(fix_path)
+    return result
 
 
 def generate_report(pipeline_id: str, steps: dict) -> dict:
-    """Step 5 — REPORT: write the post-mortem.
-
-    TODO: Build context from pipeline_id and the full steps dict, call
-    run_step() with REPORT_PROMPT, and return the result.
-    """
-    # TODO: build context dict
-    # TODO: call run_step("REPORT", REPORT_PROMPT, context) and return the result
-    raise NotImplementedError("Complete generate_report().")
+    """Step 5 — REPORT: write the post-mortem."""
+    context = {"pipeline_id": pipeline_id, "steps": steps}
+    return run_step("REPORT", REPORT_PROMPT, context)
 
 
 # ── Orchestrator — do not modify ───────────────────────────────────────────────
