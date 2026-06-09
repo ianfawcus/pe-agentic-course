@@ -55,6 +55,7 @@ import os
 import sys
 import json
 import argparse
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -196,6 +197,23 @@ REPORT_PROMPT = """\
 You are a post-mortem report writer. Summarise the full pipeline execution. Return ONLY valid JSON:
 - post_mortem_summary (string): 2-3 sentences — what happened, what the agent did, how to prevent recurrence
 - recommendations (list of strings): 2-4 concrete prevention recommendations
+- conflict_report (object): {
+    detected (bool): whether a conflict was detected between specialists,
+    type (string or null): HARD_CONFLICT | SOFT_CONFLICT | NO_CONFLICT,
+    resolution (string): the resolution taken,
+    agents_involved (list of strings): which specialists were in conflict,
+    safety_first_applied (bool): true if the Safety First rule blocked an auto-fix,
+    outcome (string): one sentence — what Safety First prevented, or why no conflict occurred
+  }
+"""
+
+HISTORY_PROMPT = """\
+You are a deployment history analyst. Given recent deployment records and a CI failure event,
+identify patterns relevant to the current failure. Return ONLY valid JSON:
+- recent_deploys (list of objects): each with sha (string), service (string), outcome (string), deployed_at (string)
+- relevant_pattern (string): deployment pattern relevant to this failure, or "no_pattern"
+- similar_past_failures (list of strings): SHAs of past deploys with similar failure patterns
+- history_summary (string): one sentence summarising deployment health over the recent period
 """
 
 AGENT_CONFIG = {
@@ -203,29 +221,57 @@ AGENT_CONFIG = {
     "max_tokens": 4096,
 }
 
+SPECIALIST_TIMEOUT = 30  # seconds — parallel futures time out after this
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def load_event(simulate: bool) -> dict:
-    """Load the CI failure event. --simulate injects a synthetic event."""
-    if simulate:
+def load_event(simulate: bool, scenario: str = "default") -> dict:
+    """Load the CI failure event.
+
+    Scenarios (used with --simulate):
+      default       — migration lock, MEDIUM confidence, no auto-fix → ESCALATE (no conflict)
+      hard_conflict — clear code bug, HIGH confidence + fix_possible=True, but GATE REJECTs
+                      → triggers SAFETY_FIRST_ESCALATE (Level 1 extra credit)
+    """
+    if not simulate:
+        return json.loads((Path(__file__).parent / "sample_data.json").read_text())
+
+    if scenario == "hard_conflict":
         return {
-            "trigger":            "github_actions_failure",
-            "pipeline_id":        f"sim-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
-            "repo":               "org/platform-service",
-            "branch":             "main",
-            "commit_sha":         "abc1234",
-            "failure_stage":      "integration-tests",
-            "test_results":       {"total": 980, "passed": 947, "failed": 33},
+            "trigger":       "github_actions_failure",
+            "pipeline_id":   f"sim-hard-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+            "repo":          "org/checkout-service",
+            "branch":        "main",
+            "commit_sha":    "def5678",
+            "failure_stage": "unit-tests",
+            "test_results":  {"total": 200, "passed": 185, "failed": 15},
             "logs": [
-                "ERROR [integration] DB migration timeout after 30s",
-                "ERROR [integration] 33 tests failed: all depend on users table",
-                "WARN  [integration] Migration lock held by deploy-2024-0130-011",
+                "ERROR [test_checkout] AttributeError: 'NoneType' object has no attribute 'user_id'",
+                "ERROR [test_checkout]   File 'checkout/service.py', line 47, in process_order",
+                "ERROR [test_checkout]     user = db.get_user(order.customer_id)",
+                "ERROR [test_checkout]   user.user_id is None when customer has no account",
+                "ERROR [test_checkout] Fix: add null check — if user is None: raise UserNotFoundError",
+                "ERROR [test_checkout] 15 tests failed: all in TestOrderProcessing",
             ],
             "rollback_available": True,
         }
-    sample = Path(__file__).parent / "sample_data.json"
-    return json.loads(sample.read_text())
+
+    return {
+        "trigger":            "github_actions_failure",
+        "pipeline_id":        f"sim-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+        "repo":               "org/platform-service",
+        "branch":             "main",
+        "commit_sha":         "abc1234",
+        "failure_stage":      "integration-tests",
+        "test_results":       {"total": 980, "passed": 947, "failed": 33},
+        "logs": [
+            "ERROR [integration] DB migration timeout after 30s",
+            "ERROR [integration] 33 tests failed: all depend on users table",
+            "WARN  [integration] Migration lock held by deploy-2024-0130-011",
+        ],
+        "rollback_available": True,
+    }
 
 
 def run_step(step_name: str, system_prompt: str, context: dict) -> dict:
@@ -239,6 +285,26 @@ def run_step(step_name: str, system_prompt: str, context: dict) -> dict:
     )
     print(json.dumps(result, indent=2))
     return result
+
+
+def _fallback_history() -> dict:
+    return {
+        "recent_deploys":       [],
+        "relevant_pattern":     "no_pattern",
+        "similar_past_failures": [],
+        "history_summary":      "Deployment history unavailable — specialist timed out.",
+    }
+
+
+def _fallback_gate() -> dict:
+    return {
+        "decision":        "REJECT",
+        "rationale":       "Gate evaluation timed out — defaulting to REJECT for safety.",
+        "blocking_issues": ["Gate specialist timed out"],
+        "conditions":      [],
+        "risk_score":      "HIGH",
+        "escalate":        True,
+    }
 
 
 def save_fix_script(script_content: str, pipeline_id: str) -> Path:
@@ -267,9 +333,49 @@ def run_step_ingest(event: dict) -> dict:
     return run_step("INGEST", INGEST_PROMPT, event)
 
 
-def run_step_diagnose(event: dict, ingest: dict) -> dict:
-    """Step 2 — DIAGNOSE: root cause analysis."""
+def run_step_history(event: dict, ingest: dict) -> dict:
+    """HISTORY specialist — enriches diagnosis with recent deployment context.
+
+    Simulates fetching from a /recent-deploys endpoint. In production this
+    would query a real deployment registry or CI history API.
+    Runs in parallel with GATE (both read only from INGEST).
+    """
+    service = ingest.get("service", event.get("repo", "unknown"))
+    recent_deploys = [
+        {
+            "sha":          event.get("commit_sha", "current"),
+            "service":      service,
+            "outcome":      "failure",
+            "deployed_at":  datetime.now(timezone.utc).isoformat(),
+            "failure_stage": event.get("failure_stage", "unknown"),
+        },
+        {
+            "sha":         "prev001",
+            "service":     service,
+            "outcome":     "success",
+            "deployed_at": "2026-06-08T14:00:00Z",
+        },
+        {
+            "sha":          "prev000",
+            "service":      service,
+            "outcome":      "failure",
+            "deployed_at":  "2026-06-07T10:30:00Z",
+            "failure_stage": "integration-tests",
+        },
+    ]
+    context = {
+        "event":          event,
+        "classification": ingest,
+        "recent_deploys": recent_deploys,
+    }
+    return run_step("HISTORY", HISTORY_PROMPT, context)
+
+
+def run_step_diagnose(event: dict, ingest: dict, history: dict | None = None) -> dict:
+    """Step 3 — DIAGNOSE: root cause analysis, optionally enriched with deployment history."""
     context = {"event": event, "classification": ingest}
+    if history:
+        context["deployment_history"] = history
     return run_step("DIAGNOSE", DIAGNOSE_PROMPT, context)
 
 
@@ -345,19 +451,27 @@ def run_step_fix_or_escalate(
 
 
 def generate_report(pipeline_id: str, steps: dict) -> dict:
-    """Step 5 — REPORT: write the post-mortem."""
-    context = {"pipeline_id": pipeline_id, "steps": steps}
+    """Step 5 — REPORT: write the post-mortem, including a structured conflict section."""
+    context = {
+        "pipeline_id":    pipeline_id,
+        "steps":          steps,
+        "conflict":       steps.get("conflict", {}),
+    }
     return run_step("REPORT", REPORT_PROMPT, context)
 
 
-# ── Orchestrator — do not modify ───────────────────────────────────────────────
+# ── Orchestrator ───────────────────────────────────────────────────────────────
 
 def run_pipeline(event: dict) -> dict:
-    """Multi-agent orchestrator. Already wired — do not edit.
+    """Multi-agent orchestrator.
 
-    Runs DIAGNOSE and GATE in parallel (ThreadPoolExecutor, same pattern as
-    Module 7), then applies Safety First conflict detection before deciding
-    the remediation path.
+    Step structure (extra credit):
+      1. INGEST        — sequential classifier
+      2. HISTORY+GATE  — parallel specialists (both read from INGEST only)
+      3. DIAGNOSE      — enriched with HISTORY result
+         conflict check — Safety First
+      4. FIX/ESCALATE  — receives DIAGNOSE + GATE + conflict verdict
+      5. REPORT        — post-mortem with structured conflict section
     """
     pipeline_id = event.get("pipeline_id", "unknown")
     steps = {}
@@ -366,45 +480,49 @@ def run_pipeline(event: dict) -> dict:
     print(f"PLATFORM AGENT — pipeline_id: {pipeline_id}")
     print("═" * 60)
 
-    # Step 1 — INGEST (sequential: every later step reads from this)
+    # Step 1 — INGEST
     print("\n[Step 1/5] INGEST")
     steps["ingest"] = {**run_step_ingest(event), "status": "completed"}
 
-    # Steps 2 + 3 — DIAGNOSE and GATE run in parallel
-    # GATE reads from INGEST directly — it does not need the diagnosis.
-    # Both are independent specialists, so ThreadPoolExecutor gives real speedup.
-    print("\n[Steps 2+3/5] DIAGNOSE + GATE running in parallel...")
+    # Step 2 — HISTORY + GATE in parallel (Level 2: bounded timeouts; Level 3: HISTORY specialist)
+    print("\n[Step 2/5] HISTORY + GATE running in parallel...")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_diagnose = executor.submit(run_step_diagnose, event, steps["ingest"])
-        future_gate     = executor.submit(run_step_gate,     event, steps["ingest"])
+        future_history = executor.submit(run_step_history, event, steps["ingest"])
+        future_gate    = executor.submit(run_step_gate,    event, steps["ingest"])
         try:
-            diagnose_result = future_diagnose.result()
-            gate_result     = future_gate.result()
-        except NotImplementedError as exc:
-            print("\n💡  TODO: One of the parallel step functions is not yet implemented.")
-            print("    Implement run_step_diagnose() and run_step_gate() in platform_agent.py,")
-            print("    following the exact same 3-line pattern as run_step_ingest().")
-            print("    To test the pipeline without implementing, run: python module8/platform_agent.py --mock --simulate")
-            raise
+            history_result = future_history.result(timeout=SPECIALIST_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            print(f"⚠️  HISTORY timed out after {SPECIALIST_TIMEOUT}s — using fallback")
+            history_result = _fallback_history()
+        try:
+            gate_result = future_gate.result(timeout=SPECIALIST_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            print(f"⚠️  GATE timed out after {SPECIALIST_TIMEOUT}s — defaulting to REJECT")
+            gate_result = _fallback_gate()
 
+    steps["history"] = {**history_result, "status": "completed"}
+    steps["gate"]    = {**gate_result,    "status": "completed"}
+
+    # Step 3 — DIAGNOSE enriched with deployment history
+    print("\n[Step 3/5] DIAGNOSE (enriched with deployment history)")
+    diagnose_result   = run_step_diagnose(event, steps["ingest"], steps["history"])
     steps["diagnose"] = {**diagnose_result, "status": "completed"}
-    steps["gate"]     = {**gate_result,     "status": "completed"}
 
-    # Conflict check — Safety First rule (mirrors Module 7 detect_conflict)
+    # Conflict check — Safety First rule
     conflict = detect_conflict(steps["diagnose"], steps["gate"])
     steps["conflict"] = conflict
     if conflict["detected"]:
         print(f"\n⚠️  CONFLICT: {conflict['type']} → {conflict['resolution']}")
         print(f"   {conflict['summary']}")
 
-    # Step 4 — FIX OR ESCALATE (receives both specialists + conflict verdict)
+    # Step 4 — FIX OR ESCALATE
     print("\n[Step 4/5] FIX OR ESCALATE")
     fix = run_step_fix_or_escalate(
         event, steps["diagnose"], steps["gate"], conflict, pipeline_id
     )
     steps["fix_or_escalate"] = {**fix, "status": "completed"}
 
-    # Step 5 — REPORT
+    # Step 5 — REPORT (Level 4: conflict_report in output)
     print("\n[Step 5/5] REPORT")
     steps["report"] = {**generate_report(pipeline_id, steps), "status": "completed"}
 
@@ -420,6 +538,7 @@ def run_pipeline(event: dict) -> dict:
             "github_issue_title":  fix.get("github_issue_title", ""),
             "github_issue_body":   fix.get("github_issue_body", ""),
             "post_mortem_summary": steps["report"].get("post_mortem_summary", ""),
+            "conflict_report":     steps["report"].get("conflict_report", {}),
         },
     }
 
@@ -432,9 +551,11 @@ def main():
                         help="Inject a synthetic CI failure event instead of reading sample_data.json")
     parser.add_argument("--mock", action="store_true",
                         help="Return pre-defined responses — no API key needed")
+    parser.add_argument("--scenario", choices=["default", "hard_conflict"], default="default",
+                        help="Simulation scenario: default (migration lock) or hard_conflict (Level 1 safety test)")
     args = parser.parse_args()
 
-    event = load_event(simulate=args.simulate)
+    event = load_event(simulate=args.simulate, scenario=args.scenario)
 
     if MOCK_MODE:
         print("[MOCK MODE] Returning pre-defined 5-step pipeline report.")

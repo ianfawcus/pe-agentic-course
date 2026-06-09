@@ -12,6 +12,14 @@ on:
         description: "Inject a synthetic CI failure event (true/false)"
         required: false
         default: "true"
+      scenario:
+        description: "Simulation scenario"
+        required: false
+        default: "default"
+        type: choice
+        options:
+          - default
+          - hard_conflict
 
 permissions:
   contents: read
@@ -43,6 +51,8 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.simulate }}" = "false" ]; then
             python module8/platform_agent.py
+          elif [ "${{ github.event.inputs.scenario }}" = "hard_conflict" ]; then
+            python module8/platform_agent.py --simulate --scenario hard_conflict
           else
             python module8/platform_agent.py --simulate
           fi
