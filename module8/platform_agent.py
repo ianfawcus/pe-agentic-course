@@ -63,7 +63,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.claude_client import ask
-from shared.output import save_json, to_step_summary, to_github_issue
+from shared.output import save_json, to_github_issue
 
 # ── Mock mode ──────────────────────────────────────────────────────────────────
 MOCK_MODE = "--mock" in sys.argv or os.environ.get("MOCK_MODE") == "1"
@@ -584,6 +584,80 @@ def run_pipeline(event: dict) -> dict:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+def _write_step_summary(result: dict) -> None:
+    """Write a rich GitHub Step Summary with collapsible <details> blocks.
+
+    Flat table for final_output scalar fields (no truncation); <details> sections
+    for nested JSON (conflict objects, per-step outputs, raw JSON).
+    No-ops when GITHUB_STEP_SUMMARY is not set (i.e. outside CI).
+    """
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    pipeline_id = result.get("pipeline_id", "unknown")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    final = result.get("final_output", {})
+    steps = result.get("steps", {})
+
+    def _details(label: str, data) -> str:
+        body = json.dumps(data, indent=2) if not isinstance(data, str) else data
+        return (
+            f"<details><summary>{label}</summary>\n\n"
+            f"```json\n{body}\n```\n\n</details>"
+        )
+
+    lines = [
+        "## Module 8 — Capstone Platform Agent",
+        f"_Pipeline: `{pipeline_id}` | {ts}_",
+        "",
+        "### Summary",
+        "",
+        "| Field | Value |",
+        "|-------|-------|",
+        f"| `recommended_action` | {final.get('recommended_action', '')} |",
+        f"| `escalate` | {final.get('escalate', '')} |",
+        f"| `confidence` | {final.get('confidence', '')} |",
+        f"| `post_mortem_summary` | {final.get('post_mortem_summary', '')} |",
+        f"| `github_issue_title` | {final.get('github_issue_title', '')} |",
+        "",
+        "### Conflict Details",
+        "",
+    ]
+
+    for k in ("conflict", "conflict_report"):
+        v = final.get(k)
+        if v:
+            lines.append(_details(f"`{k}`", v))
+            lines.append("")
+
+    issue_body = final.get("github_issue_body", "")
+    if issue_body:
+        lines.append(_details("`github_issue_body`", issue_body))
+        lines.append("")
+
+    lines += ["### Pipeline Steps", ""]
+
+    step_order = [
+        ("ingest",          "Step 1 — INGEST"),
+        ("history",         "Step 2a — HISTORY"),
+        ("gate",            "Step 2b — GATE"),
+        ("diagnose",        "Step 3 — DIAGNOSE"),
+        ("conflict",        "Conflict Check"),
+        ("fix_or_escalate", "Step 4 — FIX / ESCALATE"),
+        ("report",          "Step 5 — REPORT"),
+    ]
+    for key, label in step_order:
+        if key in steps:
+            lines.append(_details(label, steps[key]))
+            lines.append("")
+
+    lines += ["### Full Output", "", _details("📄 Raw JSON", result)]
+
+    with open(summary_path, "a") as f:
+        f.write("\n".join(lines) + "\n\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Module 8 Capstone Platform Agent")
     parser.add_argument("--simulate", action="store_true",
@@ -609,7 +683,7 @@ def main():
     print(json.dumps(result, indent=2))
 
     save_json(result, module=8, label="platform_agent")
-    print(to_step_summary(result, title="Module 8 Capstone Platform Agent"))
+    _write_step_summary(result)
 
     final = result.get("final_output", {})
     if final.get("escalate"):
