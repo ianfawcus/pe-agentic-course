@@ -55,7 +55,7 @@ import os
 import sys
 import json
 import argparse
-import concurrent.futures
+import concurrent.futures  # ← EXTRA CREDIT Level 2: needed for TimeoutError in parallel step handling
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -193,6 +193,8 @@ Rules:
 - github_issue_body MUST be a single plain-text string with no embedded newlines.
 """
 
+# ── ⭐ EXTRA CREDIT Level 4: conflict_report added to REPORT_PROMPT ─────────────
+# Makes conflict detection an explicit, auditable part of the post-mortem output.
 REPORT_PROMPT = """\
 You are a post-mortem report writer. Summarise the full pipeline execution. Return ONLY valid JSON:
 - post_mortem_summary (string): 2-3 sentences — what happened, what the agent did, how to prevent recurrence
@@ -207,6 +209,9 @@ You are a post-mortem report writer. Summarise the full pipeline execution. Retu
   }
 """
 
+# ── ⭐ EXTRA CREDIT Level 3: HISTORY_PROMPT — new specialist prompt ─────────────
+# Powers the deployment history analyst agent that enriches DIAGNOSE with
+# recent deploy patterns before root cause analysis runs.
 HISTORY_PROMPT = """\
 You are a deployment history analyst. Given recent deployment records and a CI failure event,
 identify patterns relevant to the current failure. Return ONLY valid JSON:
@@ -221,6 +226,9 @@ AGENT_CONFIG = {
     "max_tokens": 4096,
 }
 
+# ── ⭐ EXTRA CREDIT Level 2: bounded timeout for parallel specialists ────────────
+# Prevents the pipeline hanging indefinitely if an API call stalls.
+# Fallback functions (_fallback_history, _fallback_gate) are used on expiry.
 SPECIALIST_TIMEOUT = 30  # seconds — parallel futures time out after this
 
 
@@ -237,6 +245,9 @@ def load_event(simulate: bool, scenario: str = "default") -> dict:
     if not simulate:
         return json.loads((Path(__file__).parent / "sample_data.json").read_text())
 
+    # ── ⭐ EXTRA CREDIT Level 1: hard_conflict scenario ──────────────────────────
+    # Deterministic code bug (HIGH confidence, fix_possible=True) paired with a
+    # GATE REJECT → designed to trigger SAFETY_FIRST_ESCALATE through detect_conflict().
     if scenario == "hard_conflict":
         return {
             "trigger":       "github_actions_failure",
@@ -287,6 +298,10 @@ def run_step(step_name: str, system_prompt: str, context: dict) -> dict:
     return result
 
 
+# ── ⭐ EXTRA CREDIT Level 2: fallback helpers for timed-out specialists ──────────
+# Called by run_pipeline() when future.result(timeout=...) raises TimeoutError.
+# HISTORY falls back to empty (safe to continue without history context).
+# GATE falls back to REJECT — the safe default: never approve under uncertainty.
 def _fallback_history() -> dict:
     return {
         "recent_deploys":       [],
@@ -333,6 +348,10 @@ def run_step_ingest(event: dict) -> dict:
     return run_step("INGEST", INGEST_PROMPT, event)
 
 
+# ── ⭐ EXTRA CREDIT Level 3: HISTORY specialist — new pipeline step ─────────────
+# Runs in parallel with GATE. Simulates a /recent-deploys API call, constructs
+# the last 3 deployment records, and asks Claude to identify failure patterns.
+# Result is passed to run_step_diagnose() to enrich root cause analysis.
 def run_step_history(event: dict, ingest: dict) -> dict:
     """HISTORY specialist — enriches diagnosis with recent deployment context.
 
@@ -371,6 +390,11 @@ def run_step_history(event: dict, ingest: dict) -> dict:
     return run_step("HISTORY", HISTORY_PROMPT, context)
 
 
+# ── ✅ STEP-BY-STEP Task 2/4: run_step_diagnose() ──────────────────────────────
+# Build context dict from event + ingest classification, call run_step(), return result.
+# ── ⭐ EXTRA CREDIT Level 3: signature updated to accept history for enrichment ──
+# The optional `history` param was added in the extra credit commit. When present,
+# deployment history is included in context so DIAGNOSE has pattern awareness.
 def run_step_diagnose(event: dict, ingest: dict, history: dict | None = None) -> dict:
     """Step 3 — DIAGNOSE: root cause analysis, optionally enriched with deployment history."""
     context = {"event": event, "classification": ingest}
@@ -379,6 +403,9 @@ def run_step_diagnose(event: dict, ingest: dict, history: dict | None = None) ->
     return run_step("DIAGNOSE", DIAGNOSE_PROMPT, context)
 
 
+# ── ✅ STEP-BY-STEP Task 3/4: run_step_gate() ──────────────────────────────────
+# Same 3-line pattern as run_step_diagnose(). Key constraint: uses ingest, NOT
+# diagnose — gate must be independent of root cause to make conflict detection valid.
 def run_step_gate(event: dict, ingest: dict) -> dict:
     """Step 3 — GATE: evaluate quality gates independently of DIAGNOSE.
 
@@ -433,6 +460,10 @@ def detect_conflict(diagnose: dict, gate: dict) -> dict:
     }
 
 
+# ── ✅ STEP-BY-STEP Task 4/4: run_step_fix_or_escalate() ───────────────────────
+# Build context with event, diagnosis, gate, and conflict verdict.
+# Call run_step(), then handle the AUTO_FIX path: if a fix script is returned,
+# save it to disk with save_fix_script() and store the path in the result.
 def run_step_fix_or_escalate(
     event: dict, diagnose: dict, gate: dict, conflict: dict, pipeline_id: str
 ) -> dict:
@@ -450,12 +481,17 @@ def run_step_fix_or_escalate(
     return result
 
 
+# ── ✅ STEP-BY-STEP Task 5/4: generate_report() ────────────────────────────────
+# Build context from pipeline_id + full steps dict, call run_step(), return result.
+# ── ⭐ EXTRA CREDIT Level 4: conflict key surfaced explicitly in context ─────────
+# Passing `conflict` as a top-level key (not just buried in steps) makes it
+# easier for REPORT_PROMPT to reason about what conflict resolution occurred.
 def generate_report(pipeline_id: str, steps: dict) -> dict:
     """Step 5 — REPORT: write the post-mortem, including a structured conflict section."""
     context = {
         "pipeline_id":    pipeline_id,
         "steps":          steps,
-        "conflict":       steps.get("conflict", {}),
+        "conflict":       steps.get("conflict", {}),  # ← EXTRA CREDIT Level 4: explicit conflict context
     }
     return run_step("REPORT", REPORT_PROMPT, context)
 
@@ -484,28 +520,31 @@ def run_pipeline(event: dict) -> dict:
     print("\n[Step 1/5] INGEST")
     steps["ingest"] = {**run_step_ingest(event), "status": "completed"}
 
-    # Step 2 — HISTORY + GATE in parallel (Level 2: bounded timeouts; Level 3: HISTORY specialist)
+    # ⭐ EXTRA CREDIT Level 3: HISTORY specialist added to the parallel block
+    # ⭐ EXTRA CREDIT Level 2: futures wrapped with timeout=SPECIALIST_TIMEOUT + fallbacks
+    # Step 2 — HISTORY + GATE in parallel (both read from INGEST only, never from each other)
     print("\n[Step 2/5] HISTORY + GATE running in parallel...")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_history = executor.submit(run_step_history, event, steps["ingest"])
+        future_history = executor.submit(run_step_history, event, steps["ingest"])  # ← Level 3: new specialist
         future_gate    = executor.submit(run_step_gate,    event, steps["ingest"])
         try:
-            history_result = future_history.result(timeout=SPECIALIST_TIMEOUT)
+            history_result = future_history.result(timeout=SPECIALIST_TIMEOUT)  # ← Level 2: bounded timeout
         except concurrent.futures.TimeoutError:
             print(f"⚠️  HISTORY timed out after {SPECIALIST_TIMEOUT}s — using fallback")
-            history_result = _fallback_history()
+            history_result = _fallback_history()  # ← Level 2: safe fallback
         try:
-            gate_result = future_gate.result(timeout=SPECIALIST_TIMEOUT)
+            gate_result = future_gate.result(timeout=SPECIALIST_TIMEOUT)  # ← Level 2: bounded timeout
         except concurrent.futures.TimeoutError:
             print(f"⚠️  GATE timed out after {SPECIALIST_TIMEOUT}s — defaulting to REJECT")
-            gate_result = _fallback_gate()
+            gate_result = _fallback_gate()  # ← Level 2: safe fallback (always REJECT)
 
     steps["history"] = {**history_result, "status": "completed"}
     steps["gate"]    = {**gate_result,    "status": "completed"}
 
+    # ⭐ EXTRA CREDIT Level 3: DIAGNOSE now receives history as a third argument
     # Step 3 — DIAGNOSE enriched with deployment history
     print("\n[Step 3/5] DIAGNOSE (enriched with deployment history)")
-    diagnose_result   = run_step_diagnose(event, steps["ingest"], steps["history"])
+    diagnose_result   = run_step_diagnose(event, steps["ingest"], steps["history"])  # ← Level 3: history enrichment
     steps["diagnose"] = {**diagnose_result, "status": "completed"}
 
     # Conflict check — Safety First rule
@@ -538,7 +577,7 @@ def run_pipeline(event: dict) -> dict:
             "github_issue_title":  fix.get("github_issue_title", ""),
             "github_issue_body":   fix.get("github_issue_body", ""),
             "post_mortem_summary": steps["report"].get("post_mortem_summary", ""),
-            "conflict_report":     steps["report"].get("conflict_report", {}),
+            "conflict_report":     steps["report"].get("conflict_report", {}),  # ← EXTRA CREDIT Level 4: structured conflict audit trail
         },
     }
 
@@ -551,7 +590,7 @@ def main():
                         help="Inject a synthetic CI failure event instead of reading sample_data.json")
     parser.add_argument("--mock", action="store_true",
                         help="Return pre-defined responses — no API key needed")
-    parser.add_argument("--scenario", choices=["default", "hard_conflict"], default="default",
+    parser.add_argument("--scenario", choices=["default", "hard_conflict"], default="default",  # ← EXTRA CREDIT Level 1
                         help="Simulation scenario: default (migration lock) or hard_conflict (Level 1 safety test)")
     args = parser.parse_args()
 
